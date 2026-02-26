@@ -26,15 +26,16 @@
 
 cmake_minimum_required(VERSION 3.17)
 
-project(tritontensorflowbackend LANGUAGES C CXX)
-
 # Use C++17 standard as Triton's minimum required.
 set(TRITON_MIN_CXX_STANDARD 17 CACHE STRING "The minimum C++ standard which features are requested to build this target.")
+
+project(tritontensorflowbackend LANGUAGES C CXX)
 
 #
 # Options
 #
-option(TRITON_ENABLE_GPU "Enable GPU support in backend." ON)
+option(TRITON_ENABLE_GPU "Enable GPU support in backend." OFF)
+option(TRITON_ENABLE_ROCM "Enable ROCm support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend." ON)
 set(TRITON_TENSORFLOW_VERSION "2" CACHE STRING "TensorFlow version, must be '2'. Starting from 23.04, Triton no longer supports Tensorflow 1.")
 set(TRITON_TENSORFLOW_DOCKER_IMAGE "" CACHE STRING "Docker image containing the TensorFlow build required by backend.")
@@ -43,9 +44,12 @@ set(TRITON_TENSORFLOW_LIB_PATHS "" CACHE PATH "Paths to TensorFlow libraries. Mu
 set(TRITON_TENSORFLOW_INCLUDE_PATHS "" CACHE PATH "Paths to TensorFlow includes. Multiple paths may be specified by separating them with a semicolon.")
 
 set(TRITON_REPO_ORGANIZATION "https://github.com/triton-inference-server" CACHE STRING "Git repository to pull from")
+set(TRITON_COMMON_REPO_TAG "r23.10" CACHE STRING "Tag for triton-inference-server/common repo.")
+if(NOT TRITON_ENABLE_ROCM)
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo.")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo.")
-set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo.")
+endif()
+
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -68,7 +72,7 @@ if(${TRITON_TENSORFLOW_VERSION} EQUAL "1")
 elseif(${TRITON_TENSORFLOW_VERSION} EQUAL "2")
   set(TRITON_TENSORFLOW_BACKEND_LIBNAME triton_tensorflow)
   set(TRITON_TENSORFLOW_BACKEND_INSTALLDIR ${CMAKE_INSTALL_PREFIX}/backends/tensorflow)
-  set(TRITON_TENSORFLOW_PYTHON_PATH "/usr/local/lib/python3.10/dist-packages/tensorflow")
+  set(TRITON_TENSORFLOW_PYTHON_PATH "/usr/local/lib/python3.10/site-packages/tensorflow")
 else()
   message(FATAL_ERROR "TRITON_TENSORFLOW_VERSION allowed values is '2'")
 endif()
@@ -83,23 +87,37 @@ include(FetchContent)
 
 FetchContent_Declare(
   repo-common
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
+  GIT_REPOSITORY https://github.com/triton-inference-server/common.git
   GIT_TAG ${TRITON_COMMON_REPO_TAG}
   GIT_SHALLOW ON
 )
 FetchContent_Declare(
   repo-core
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
+  GIT_REPOSITORY https://github.com/ROCm/triton-inference-server-core.git
   GIT_TAG ${TRITON_CORE_REPO_TAG}
   GIT_SHALLOW ON
 )
 FetchContent_Declare(
   repo-backend
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
+  GIT_REPOSITORY https://github.com/ROCm/triton-inference-server-backend.git
   GIT_TAG ${TRITON_BACKEND_REPO_TAG}
   GIT_SHALLOW ON
 )
 FetchContent_MakeAvailable(repo-common repo-core repo-backend)
+
+
+#
+# HIP
+#
+if(${TRITON_ENABLE_ROCM})
+  set(CMAKE_PREFIX_PATH "/opt/rocm" ${CMAKE_PREFIX_PATH})
+  find_package(hip REQUIRED)
+  message(STATUS "Using ROCm HIP ${hip_VERSION}")
+  set(HIP_HIPCC_FLAGS -std=c++${TRITON_MIN_CXX_STANDARD})
+elseif()
+  message(WARNING "TRITON_ENABLE_ROCM is OFF, AMD GPU Tensor support will be disabled")
+endif()
+
 
 #
 # CUDA
@@ -132,12 +150,15 @@ if (${TRITON_TENSORFLOW_DOCKER_BUILD})
       ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
       ${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
       LICENSE.tensorflow
-    COMMAND docker pull ${TRITON_TENSORFLOW_DOCKER_IMAGE}
+    COMMAND if [ "${TRITON_TENSORFLOW_DOCKER_IMAGE}" == rocm/* ] \; then  docker pull ${TRITON_TENSORFLOW_DOCKER_IMAGE} \; fi \;
+    COMMAND docker stop tensorflow_backend_tflib || echo "error ignored..." || true
     COMMAND docker rm tensorflow_backend_tflib || echo "error ignored..." || true
-    COMMAND docker create --name tensorflow_backend_tflib ${TRITON_TENSORFLOW_DOCKER_IMAGE}
-    COMMAND docker cp -L tensorflow_backend_tflib:/usr/local/lib/tensorflow/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
+    COMMAND docker create --name tensorflow_backend_tflib ${TRITON_TENSORFLOW_DOCKER_IMAGE} tail -f /dev/null
+    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib && docker exec tensorflow_backend_tflib bash -c 'echo inside container && git clone --recursive --single-branch --depth=1 -b TRITONTF-hip https://github.com/ROCm/tensorflow-upstream.git tensorflow-upstream && cd tensorflow-upstream && bash build_rocm_python3' \; fi
+    COMMAND docker cp -L tensorflow_backend_tflib:/usr/local/lib/python3.10/site-packages/tensorflow/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
-    COMMAND docker cp tensorflow_backend_tflib:/opt/tensorflow/tensorflow-source/LICENSE LICENSE.tensorflow
+    COMMAND docker cp tensorflow_backend_tflib:/tensorflow/LICENSE LICENSE.tensorflow
+    COMMAND docker stop tensorflow_backend_tflib || echo "error ignored..." || true
     COMMAND docker rm tensorflow_backend_tflib
 
     COMMAND docker stop tensorflow_backend_deps || echo "error ignored..." || true
@@ -197,11 +218,12 @@ if (NOT ${TRITON_TENSORFLOW_DOCKER_BUILD})
   )
 endif() # !TRITON_TENSORFLOW_DOCKER_BUILD
 
-target_compile_features(triton-tensorflow-backend PRIVATE cxx_std_${TRITON_MIN_CXX_STANDARD})
+target_compile_features(triton-tensorflow-backend PRIVATE cxx_std_11)
 target_compile_options(
   triton-tensorflow-backend PRIVATE
   $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
-    -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
+    -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -fpermissive>
+    #-Werror
 )
 
 # C/C++ defines that are used directly by this backend.
@@ -211,6 +233,14 @@ if(${TRITON_ENABLE_GPU})
     PRIVATE TRITON_ENABLE_GPU=1
   )
 endif() # TRITON_ENABLE_GPU
+
+# C/C++ defines that are used directly by this backend.
+if(${TRITON_ENABLE_ROCM})
+  target_compile_definitions(
+    triton-tensorflow-backend
+    PRIVATE TRITON_ENABLE_ROCM=1
+  )
+endif() # TRITON_ENABLE_ROCM
 
 set_target_properties(
   triton-tensorflow-backend
@@ -261,6 +291,14 @@ if(${TRITON_ENABLE_GPU})
       CUDA::cudart
   )
 endif() # TRITON_ENABLE_GPU
+
+if(${TRITON_ENABLE_ROCM})
+  target_link_libraries(
+    triton-tensorflow-backend
+    PRIVATE
+    hip::host
+  )
+endif() # TRITON_ENABLE_ROCM
 
 #
 # Install
