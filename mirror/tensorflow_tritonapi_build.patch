@@ -1,0 +1,200 @@
+diff --git a/tensorflow/BUILD b/tensorflow/BUILD
+index 569b85dc69a267..b68c72cb5411fa 100644
+--- a/tensorflow/BUILD
++++ b/tensorflow/BUILD
+@@ -1370,7 +1370,8 @@ tf_cc_shared_library(
+         "//tensorflow/core",
+         "//tensorflow/core/common_runtime/eager:context",
+         "//tensorflow/core/common_runtime/eager:tensor_handle",
+-        "//tensorflow/core/config:flag_defs",
++       "//tensorflow/core/common_runtime:tensorflow_backend_tf",
++       "//tensorflow/core/config:flag_defs",
+         "//tensorflow/core/config:flags",
+         "//tensorflow/core/data/service:dispatcher_client",
+         "//tensorflow/core/data/service:grpc_util",
+@@ -1459,7 +1460,10 @@ tf_cc_shared_library(
+         "//tensorflow/core/distributed_runtime/rpc:grpc_session",
+     ]),
+     soversion = VERSION,
+-    static_deps = PACKAGE_STATIC_DEPS,
++    #static_deps = PACKAGE_STATIC_DEPS,
++    static_deps = PACKAGE_STATIC_DEPS + [
++        "//tensorflow/core/common_runtime:tensorflow_backend_tf",
++    ],
+     visibility = ["//visibility:public"],
+     win_def_file = ":tensorflow_filtered_def_file",
+ )
+diff --git a/tensorflow/core/BUILD b/tensorflow/core/BUILD
+index 298eed3fcb650a..8c592885c8ca58 100644
+--- a/tensorflow/core/BUILD
++++ b/tensorflow/core/BUILD
+@@ -723,6 +723,7 @@ cc_library(
+     deps = [
+         ":tensorflow_opensource",
+         "//tensorflow/core/platform/default/build_config:tensorflow_platform_specific",
++       "//tensorflow/core/common_runtime:tensorflow_backend_tf",
+     ],
+ )
+ 
+diff --git a/tensorflow/core/common_runtime/BUILD b/tensorflow/core/common_runtime/BUILD
+index 75c9626919b14c..472fa2f12de383 100644
+--- a/tensorflow/core/common_runtime/BUILD
++++ b/tensorflow/core/common_runtime/BUILD
+@@ -1294,6 +1294,37 @@ cc_library(
+     ],
+ )
+ 
++cc_library(
++    name = "tensorflow_backend_tf",
++    srcs = ["tensorflow_backend_tf.cc"],
++    hdrs = ["tensorflow_backend_tf.h",
++    "//tensorflow/cc/saved_model:loader.h",
++    "//tensorflow/core/public:session.h",
++    "//tensorflow/cc/saved_model:tag_constants.h",
++    "//tensorflow/core/common_runtime/gpu:gpu_process_state.h",
++    "//tensorflow/core/common_runtime/device:device_id.h",
++    "//tensorflow/core/common_runtime:device.h",
++    "//tensorflow/core/common_runtime:device_mgr.h",
++    "//tensorflow/core/common_runtime/gpu:gpu_id.h",
++    ],
++    visibility = ["//visibility:public"],
++    deps = [
++           "@local_config_rocm//rocm:rocm_headers",
++           "//tensorflow/c:c_api_headers",
++           "//tensorflow/core/common_runtime:device_mgr",
++           "//tensorflow/core/common_runtime/gpu:gpu_id",
++           "//tensorflow/core:framework",
++            "//tensorflow/core:framework_internal",
++            "//tensorflow/core:graph",
++            "//tensorflow/core:lib",
++            "//tensorflow/core:lib_internal",
++            "//tensorflow/core:protos_all_cc",
++            "@com_google_absl//absl/base",
++           "//tensorflow/core/grappler:utils",
++           "//tensorflow/c:env",
++    ],
++)
++
+ cc_library(
+     name = "local_executor_params",
+     hdrs = ["local_executor_params.h"],
+@@ -2079,6 +2110,7 @@ tf_cuda_library(
+         ":int32_fulltype",
+         ":isolate_placer_inspection_required_ops_pass",
+         ":local_device",
++       #":tensorflow_backend_tf",
+         ":lower_functional_ops",
+         ":memory_types",
+         ":mkl_cpu_allocator",
+diff --git a/tensorflow/core/common_runtime/tensorflow_backend_tf.cc b/tensorflow/core/common_runtime/tensorflow_backend_tf.cc
+index be214bf..e96b8c4 100644
+--- a/tensorflow/core/common_runtime/tensorflow_backend_tf.cc
++++ b/tensorflow/core/common_runtime/tensorflow_backend_tf.cc
+@@ -24,15 +24,14 @@
+ // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+-#include "triton/tensorflow_backend_tf.h"
++#include "tensorflow_backend_tf.h"
+ 
+ #include "tensorflow/c/c_api.h"
+ #include "tensorflow/cc/saved_model/loader.h"
+ #include "tensorflow/cc/saved_model/tag_constants.h"
+ #include "tensorflow/core/common_runtime/device.h"
+ #include "tensorflow/core/common_runtime/device_mgr.h"
+-#include "tensorflow/core/common_runtime/gpu/gpu_id_utils.h"
+-#include "tensorflow/core/common_runtime/gpu/gpu_mem_allocator.h"
++#include "tensorflow/core/common_runtime/gpu/gpu_id.h"
+ #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
+ #include "tensorflow/core/framework/tensor.h"
+ #include "tensorflow/core/framework/tensor_shape.pb.h"
+@@ -46,7 +45,8 @@
+ #include "tensorflow/core/public/session.h"
+ #include "tensorflow/core/public/session_options.h"
+ #include "tensorflow/core/util/device_name_utils.h"
+-#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
++#include "rocm/include/hip/hip_runtime_api.h"
++#include "tensorflow/c/env.h"
+ 
+ TRITONTF_Error* TRITONTF_ErrorNew(const std::string& str);
+ TRITONTF_Shape* TRITONTF_ShapeNew(size_t rank, int64_t* dims);
+@@ -59,8 +59,8 @@ void TRITONTF_IOListDelete(TRITONTF_IOList* list);
+ #define RETURN_IF_TF_ERROR(TFS)                           \
+   do {                                                    \
+     const tensorflow::Status& status__ = (TFS);           \
+-    if (status__.code() != 0) {                           \
+-      return TRITONTF_ErrorNew(status__.error_message()); \
++    if (static_cast<int>(status__.code()) != 0) {                           \
++      return TRITONTF_ErrorNew(std::string(status__.message())); \
+     }                                                     \
+   } while (false)
+ 
+@@ -375,9 +375,9 @@ TensorImpl::TensorImpl(
+ {
+   // Only request for GPU allocator for supported data type
+   auto a = ((tf_gpu_id >= 0) && IsGPUFeedAndFetchSupported(dtype))
+-               ? tensorflow::GPUProcessState::singleton()->GetGPUAllocator(
+-                     tensorflow::GPUOptions(), tensorflow::TfGpuId(tf_gpu_id),
+-                     1 << 28 /* total_memory_size */)
++               ? tensorflow::GPUProcessState::singleton()->GetGPUAllocator(tsl::TfDeviceId(tf_gpu_id))
++                     //tensorflow::GPUOptions(), tsl::TfDeviceId(tf_gpu_id) ,// tensorflow::TfGpuId(tf_gpu_id),
++                     //1 << 28 /* total_memory_size */)
+                : nullptr;
+   if (a == nullptr) {
+     tftensor_ = tensorflow::Tensor(ConvertDataType(dtype), tfshape);
+@@ -414,24 +414,26 @@ TensorImpl::Init()
+     nonstring_base_ = static_cast<char*>(flat.data());
+     nonstring_byte_size_ = flat.size();
+ 
+-    cudaPointerAttributes attributes;
+-    cudaError_t err = cudaPointerGetAttributes(&attributes, nonstring_base_);
++    hipPointerAttribute_t attributes;
++    hipError_t err = hipPointerGetAttributes(&attributes, nonstring_base_);
+     gpu_tensor_ =
+-        ((err == cudaSuccess) && (attributes.type == cudaMemoryTypeDevice));
++        ((err == hipSuccess) && (attributes.type == hipMemoryTypeDevice));
+   }
+ }
+ 
+ const std::string&
+ TensorImpl::String(size_t idx) const
+ {
+-  auto flat = tftensor_.flat<std::string>();
++  //auto flat = tftensor_.flat<std::string>();
++  auto flat = tftensor_.flat<::tensorflow::tstring>();
+   return flat(idx);
+ }
+ 
+ void
+ TensorImpl::SetString(size_t idx, const std::string& str)
+ {
+-  auto flat = tftensor_.flat<std::string>();
++  //auto flat = tftensor_.flat<std::string>();
++  auto flat = tftensor_.flat<::tensorflow::tstring>();
+   flat(idx) = str;
+ }
+ 
+@@ -838,7 +840,7 @@ TRITONTF_ModelCreateFromGraphDef(
+     const std::map<int, std::vector<float>>& memory_limit_mb,
+     const TRITONTF_TFTRTConfig* tftrt_config, const bool auto_mixed_precision)
+ {
+-  tensorflow::SessionOptions session_options;
++	tensorflow::SessionOptions session_options;
+   NewSessionOptions(
+       num_intra_threads, num_inter_threads, use_per_session_threads,
+       has_graph_level, graph_level, allow_gpu_memory_growth,
+@@ -1178,11 +1180,13 @@ TRITONTF_ModelInitialize(
+   return nullptr;
+ }
+ 
++
+ TRITONTF_Error*
+ TRITONTF_LoadAndRegisterLibrary(const char* path)
+ {
+   TF_Status* status = TF_NewStatus();
+-  TF_Library* lib = TF_LoadLibrary(path, status);
++  //TF_Library* lib = TF_LoadLibrary(path, status);
++  TF_Library* lib = (TF_Library*)TF_LoadSharedLibrary(path, status);
+   TF_Code status_code = TF_GetCode(status);
+   std::string status_msg(TF_Message(status));
+   TF_DeleteStatus(status);

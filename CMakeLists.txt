@@ -154,7 +154,10 @@ if (${TRITON_TENSORFLOW_DOCKER_BUILD})
     COMMAND docker stop tensorflow_backend_tflib || echo "error ignored..." || true
     COMMAND docker rm tensorflow_backend_tflib || echo "error ignored..." || true
     COMMAND docker create --name tensorflow_backend_tflib ${TRITON_TENSORFLOW_DOCKER_IMAGE} tail -f /dev/null
-    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib && docker exec tensorflow_backend_tflib bash -c 'echo inside container && git clone --recursive --single-branch --depth=1 -b TRITONTF-hip https://github.com/ROCm/tensorflow-upstream.git tensorflow-upstream && cd tensorflow-upstream && bash build_rocm_python3' \; fi
+    COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/src/tensorflow_backend_tf.h tensorflow_backend_tflib:/tmp/
+    COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_backend_tf.cc tensorflow_backend_tflib:/tmp/
+    COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_tritonapi_build.patch tensorflow_backend_tflib:/tmp/
+    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib && docker exec tensorflow_backend_tflib bash -c 'echo inside container && git clone --recursive https://github.com/ROCm/tensorflow-upstream.git && cd tensorflow-upstream && git checkout v2.20.0-rocm-enhanced && cp /tmp/tensorflow_backend_tf.* tensorflow/core/common_runtime/ && cp /tmp/tensorflow_tritonapi_build.patch . && patch -p1 < tensorflow_tritonapi_build.patch && bash build_rocm_python3' \; fi
     COMMAND docker cp -L tensorflow_backend_tflib:/usr/local/lib/python3.10/site-packages/tensorflow/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:/tensorflow/LICENSE LICENSE.tensorflow
