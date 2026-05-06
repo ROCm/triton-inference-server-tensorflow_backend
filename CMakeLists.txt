@@ -72,7 +72,7 @@ if(${TRITON_TENSORFLOW_VERSION} EQUAL "1")
 elseif(${TRITON_TENSORFLOW_VERSION} EQUAL "2")
   set(TRITON_TENSORFLOW_BACKEND_LIBNAME triton_tensorflow)
   set(TRITON_TENSORFLOW_BACKEND_INSTALLDIR ${CMAKE_INSTALL_PREFIX}/backends/tensorflow)
-  set(TRITON_TENSORFLOW_PYTHON_PATH "/usr/local/lib/python3.10/site-packages/tensorflow")
+  set(TRITON_TENSORFLOW_PYTHON_PATH "/opt/venv/lib/python3.10/site-packages/tensorflow")
 else()
   message(FATAL_ERROR "TRITON_TENSORFLOW_VERSION allowed values is '2'")
 endif()
@@ -157,10 +157,10 @@ if (${TRITON_TENSORFLOW_DOCKER_BUILD})
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/src/tensorflow_backend_tf.h tensorflow_backend_tflib:/tmp/
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_backend_tf.cc tensorflow_backend_tflib:/tmp/
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_tritonapi_build.patch tensorflow_backend_tflib:/tmp/
-    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib && docker exec tensorflow_backend_tflib bash -c 'echo inside container && git clone --recursive https://github.com/ROCm/tensorflow-upstream.git && cd tensorflow-upstream && git checkout v2.20.0-rocm-enhanced && cp /tmp/tensorflow_backend_tf.* tensorflow/core/common_runtime/ && cp /tmp/tensorflow_tritonapi_build.patch . && patch -p1 < tensorflow_tritonapi_build.patch && bash build_rocm_python3' \; fi
-    COMMAND docker cp -L tensorflow_backend_tflib:/usr/local/lib/python3.10/site-packages/tensorflow/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
+    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib && docker exec tensorflow_backend_tflib bash -c 'echo inside container && apt-get update -y && apt install apt-transport-https curl gnupg -y && curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor > bazel-archive-keyring.gpg && mv bazel-archive-keyring.gpg /usr/share/keyrings && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/bazel-archive-keyring.gpg] https://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list && apt-get update -y  && apt-get install patch bazel-7.4.1 -y && ln -s /usr/bin/bazel-7.4.1 /usr/bin/bazel && git clone --recursive https://github.com/ROCm/tensorflow-upstream.git && cd tensorflow-upstream && git checkout v2.20.0-rocm-enhanced && cp /tmp/tensorflow_backend_tf.* tensorflow/core/common_runtime/ && cp /tmp/tensorflow_tritonapi_build.patch . && patch -p1 < tensorflow_tritonapi_build.patch && bash build_rocm_python3' \; fi
+    COMMAND docker cp -L tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
-    COMMAND docker cp tensorflow_backend_tflib:/tensorflow/LICENSE LICENSE.tensorflow
+    COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/include/LICENSE LICENSE.tensorflow
     COMMAND docker stop tensorflow_backend_tflib || echo "error ignored..." || true
     COMMAND docker rm tensorflow_backend_tflib
 
