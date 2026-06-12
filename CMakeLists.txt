@@ -157,7 +157,7 @@ if (${TRITON_TENSORFLOW_DOCKER_BUILD})
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/src/tensorflow_backend_tf.h tensorflow_backend_tflib:/tmp/
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_backend_tf.cc tensorflow_backend_tflib:/tmp/
     COMMAND docker cp ${CMAKE_CURRENT_SOURCE_DIR}/mirror/tensorflow_tritonapi_build.patch tensorflow_backend_tflib:/tmp/
-    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ]\; then echo ROCM enabled && docker start tensorflow_backend_tflib; fi 
+    COMMAND if [ "${TRITON_ENABLE_ROCM}" = "ON" ] \; then echo ROCM enabled && docker start tensorflow_backend_tflib \; fi
     COMMAND docker cp -L tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_CC_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION} ${TRITON_TENSORFLOW_FW_LIBNAME}.${TRITON_TENSORFLOW_VERSION}
     COMMAND docker cp tensorflow_backend_tflib:${TRITON_TENSORFLOW_PYTHON_PATH}/include/LICENSE LICENSE.tensorflow
